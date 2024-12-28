@@ -1,16 +1,9 @@
-/*
-  ==============================================================================
-
-	This file contains the basic framework code for a JUCE plugin processor.
-
-  ==============================================================================
-*/
-
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
 //==============================================================================
-NewProjectAudioProcessor::NewProjectAudioProcessor()
+
+AudioUploadProcessor::AudioUploadProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
 	: AudioProcessor(BusesProperties()
 #if ! JucePlugin_IsMidiEffect
@@ -24,17 +17,16 @@ NewProjectAudioProcessor::NewProjectAudioProcessor()
 {
 }
 
-NewProjectAudioProcessor::~NewProjectAudioProcessor()
-{
-}
+AudioUploadProcessor::~AudioUploadProcessor() {}
 
 //==============================================================================
-const juce::String NewProjectAudioProcessor::getName() const
+
+const juce::String AudioUploadProcessor::getName() const
 {
 	return JucePlugin_Name;
 }
 
-bool NewProjectAudioProcessor::acceptsMidi() const
+bool AudioUploadProcessor::acceptsMidi() const
 {
 #if JucePlugin_WantsMidiInput
 	return true;
@@ -43,7 +35,7 @@ bool NewProjectAudioProcessor::acceptsMidi() const
 #endif
 }
 
-bool NewProjectAudioProcessor::producesMidi() const
+bool AudioUploadProcessor::producesMidi() const
 {
 #if JucePlugin_ProducesMidiOutput
 	return true;
@@ -52,7 +44,7 @@ bool NewProjectAudioProcessor::producesMidi() const
 #endif
 }
 
-bool NewProjectAudioProcessor::isMidiEffect() const
+bool AudioUploadProcessor::isMidiEffect() const
 {
 #if JucePlugin_IsMidiEffect
 	return true;
@@ -61,168 +53,148 @@ bool NewProjectAudioProcessor::isMidiEffect() const
 #endif
 }
 
-double NewProjectAudioProcessor::getTailLengthSeconds() const
+double AudioUploadProcessor::getTailLengthSeconds() const
 {
 	return 0.0;
 }
 
-int NewProjectAudioProcessor::getNumPrograms()
+int AudioUploadProcessor::getNumPrograms()
 {
-	return 1;   // NB: some hosts don't cope very well if you tell them there are 0 programs,
-	// so this should be at least 1, even if you're not really implementing programs.
+	return 1;
 }
 
-int NewProjectAudioProcessor::getCurrentProgram()
+int AudioUploadProcessor::getCurrentProgram()
 {
 	return 0;
 }
 
-void NewProjectAudioProcessor::setCurrentProgram(int index)
+void AudioUploadProcessor::setCurrentProgram(int index)
 {
 }
 
-const juce::String NewProjectAudioProcessor::getProgramName(int index)
+const juce::String AudioUploadProcessor::getProgramName(int index)
 {
 	return {};
 }
 
-void NewProjectAudioProcessor::changeProgramName(int index, const juce::String& newName)
+void AudioUploadProcessor::changeProgramName(int index, const juce::String& newName)
 {
 }
 
 //==============================================================================
-void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+
+void AudioUploadProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-	// Use this method as the place to do any pre-playback
-	// initialisation that you need..
-	const int initialSize = static_cast<int>(sampleRate * 10); // 10 seconds
-	recordedBuffer.setSize(2, initialSize); // Stereo buffer
+	const int maxBufferSize = static_cast<int>(sampleRate * 30.0); // 30 seconds max recording time
+	recordedBuffer.setSize(2, maxBufferSize); // Stereo buffer
+	recordedSamples = 0;
+
+	DBG("Buffer allocated with size: " + juce::String(maxBufferSize));
 }
 
-void NewProjectAudioProcessor::releaseResources()
+void AudioUploadProcessor::releaseResources()
 {
-	// When playback stops, you can use this as an opportunity to free up any
-	// spare memory, etc.
+	recordedBuffer.setSize(0, 0);
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
-bool NewProjectAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
+bool AudioUploadProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
 #if JucePlugin_IsMidiEffect
 	juce::ignoreUnused(layouts);
 	return true;
 #else
-	// This is the place where you check if the layout is supported.
-	// In this template code we only support mono or stereo.
-	// Some plugin hosts, such as certain GarageBand versions, will only
-	// load plugins that support stereo bus layouts.
 	if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono()
 		&& layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
 		return false;
 
-	// This checks if the input layout matches the output layout
-#if ! JucePlugin_IsSynth
 	if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
 		return false;
-#endif
 
 	return true;
 #endif
 }
 #endif
 
-void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+void AudioUploadProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
-	auto totalNumInputChannels = getTotalNumInputChannels();
-	auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-	// In case we have more outputs than inputs, this code clears any output
-	// channels that didn't contain input data, (because these aren't
-	// guaranteed to be empty - they may contain garbage).
-	// This is here to avoid people getting screaming feedback
-	// when they first compile a plugin, but obviously you don't need to keep
-	// this code if your algorithm always overwrites all the output channels.
-	for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-		buffer.clear(i, 0, buffer.getNumSamples());
-
-	// This is the place where you'd normally do the guts of your plugin's
-	// audio processing...
-	// Make sure to reset the state if your inner loop is processing
-	// the samples and the outer loop is handling the channels.
-	// Alternatively, you can process the samples with the channels
-	// interleaved by keeping the same state.
-	//for (int channel = 0; channel < totalNumInputChannels; ++channel)
-	//{
-	//	auto* channelData = buffer.getWritePointer(channel);
-
-	//	// ..do something to the data...
-	//}
+	// Ensure we don't exceed buffer size
+	jassert(recordedSamples <= recordedBuffer.getNumSamples());
 
 	if (isRecording)
 	{
-		const int currentSamples = recordedBuffer.getNumSamples();
-		const int newSamples = buffer.getNumSamples();
-		const int totalSamples = currentSamples + newSamples;
+		const int bufferSamples = buffer.getNumSamples();
+		const int remainingSpace = recordedBuffer.getNumSamples() - recordedSamples;
 
-		if (totalSamples > recordedBuffer.getNumSamples()) {
-			const int newSize = totalSamples + (totalSamples / 2);
-			recordedBuffer.setSize(2, newSize, true, true); // Resize buffer if needed
-		}
-
-		for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+		if (remainingSpace >= bufferSamples)
 		{
-			recordedBuffer.copyFrom(channel, currentSamples, buffer, channel, 0, newSamples);
+			for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+				recordedBuffer.copyFrom(channel, recordedSamples, buffer, channel, 0, bufferSamples);
+
+			recordedSamples += bufferSamples;
 		}
+		else
+		{
+			DBG("Recording buffer full. Stopping recording.");
+			stopRecording();
+		}
+	}
+	else if (recordedSamples > recordedBuffer.getNumSamples())
+	{
+		DBG("Error: Recorded samples exceed buffer size. Resetting.");
+		recordedSamples = recordedBuffer.getNumSamples(); // Reset to max valid samples
 	}
 }
 
 //==============================================================================
-bool NewProjectAudioProcessor::hasEditor() const
+
+bool AudioUploadProcessor::hasEditor() const
 {
-	return true; // (change this to false if you choose to not supply an editor)
+	return true;
 }
 
-juce::AudioProcessorEditor* NewProjectAudioProcessor::createEditor()
+juce::AudioProcessorEditor* AudioUploadProcessor::createEditor()
 {
-	return new NewProjectAudioProcessorEditor(*this);
-}
-
-//==============================================================================
-void NewProjectAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
-{
-	// You should use this method to store your parameters in the memory block.
-	// You could do that either as raw data, or use the XML or ValueTree classes
-	// as intermediaries to make it easy to save and load complex data.
-}
-
-void NewProjectAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
-{
-	// You should use this method to restore your parameters from this memory block,
-	// whose contents will have been created by the getStateInformation() call.
+	return new AudioUploadEditor(*this);
 }
 
 //==============================================================================
-// This creates new instances of the plugin..
+
+void AudioUploadProcessor::getStateInformation(juce::MemoryBlock& destData)
+{
+}
+
+void AudioUploadProcessor::setStateInformation(const void* data, int sizeInBytes)
+{
+}
+
+//==============================================================================
+
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-	return new NewProjectAudioProcessor();
+	return new AudioUploadProcessor();
 }
 
-void NewProjectAudioProcessor::startRecording()
+void AudioUploadProcessor::startRecording()
 {
+	juce::ScopedLock sl(recordLock);  // Thread synchronization for safe access to recorded buffer
 	isRecording = true;
 	recordedBuffer.clear();
+	recordedSamples = 0;
+	DBG("Recording started.");
 }
 
-void NewProjectAudioProcessor::stopRecording()
+void AudioUploadProcessor::stopRecording()
 {
+	juce::ScopedLock sl(recordLock);  // Thread synchronization
 	isRecording = false;
+	DBG("Recording stopped. Recorded samples: " + juce::String(recordedSamples));
 }
 
-void NewProjectAudioProcessor::uploadAudioToServer()
+void AudioUploadProcessor::uploadAudioToServer()
 {
-	// Convert audio buffer to WAV format
 	juce::MemoryOutputStream outputStream;
 	juce::WavAudioFormat wavFormat;
 
@@ -230,25 +202,42 @@ void NewProjectAudioProcessor::uploadAudioToServer()
 		&outputStream,
 		getSampleRate(),
 		recordedBuffer.getNumChannels(),
-		16, // Bit depth
-		{}, // Metadata
+		16,
+		{},
 		0
 	);
 
 	if (writer)
 	{
-		writer->writeFromAudioSampleBuffer(recordedBuffer, 0, recordedBuffer.getNumSamples());
-		delete writer; // Ensure to delete the writer
+		writer->writeFromAudioSampleBuffer(recordedBuffer, 0, recordedSamples);
+		//delete writer;
+
+		juce::MemoryBlock postData(outputStream.getData(), outputStream.getDataSize());
+		performAsyncUpload(postData);
 	}
-
-	juce::MemoryBlock postData(outputStream.getData(), outputStream.getDataSize());
-
-	// Upload audio to server
-	juce::URL url("http://localhost:3000/upload");
-	auto httpRequest = url.withPOSTData(postData).createInputStream(false);
-
-	if (httpRequest)
-		DBG("Audio uploaded successfully!");
 	else
-		DBG("Audio upload failed!");
+	{
+		DBG("Failed to create WAV writer.");
+	}
+}
+
+void AudioUploadProcessor::performAsyncUpload(const juce::MemoryBlock& postData)
+{
+	juce::URL url("http://localhost:3000/upload");
+
+	// Pass postData directly without using std::shared_ptr
+	juce::Thread::launch([postData, url]()
+		{
+			DBG("Uploading audio...");
+			auto stream = url.withPOSTData(postData).createInputStream(false);
+
+			if (stream)
+			{
+				DBG("Audio uploaded successfully!");
+			}
+			else
+			{
+				DBG("Audio upload failed!");
+			}
+		});
 }
